@@ -26,10 +26,10 @@ permissions:
 
 jobs:
   build-and-push:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     strategy:
       matrix:
-        platform: [intel, cuda, vulkan, cpu, musa, rocm]
+        platform: [cuda]
       fail-fast: false
     steps:
       - name: Checkout code
@@ -58,16 +58,17 @@ jobs:
       - name: Run build-container
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: ./docker/build-container.sh ${{ matrix.platform }} ${{ github.event_name != 'push' }}
-
+        run: | 
+             github_sha_hash=${{ github.sha }}
+             ./docker/build-container.sh ${{ matrix.platform }} true ${github_sha_hash:0:7}
   # note make sure mostlygeek/llama-swap has admin rights to the llama-swap package
   # see: https://github.com/actions/delete-package-versions/issues/74
-  delete-untagged-containers:
-    needs: build-and-push
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/delete-package-versions@v5
-        with:
-          package-name: 'llama-swap'
-          package-type: 'container'
-          delete-only-untagged-versions: 'true'
+  # delete-untagged-containers:
+  #   needs: build-and-push
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/delete-package-versions@v5
+  #       with:
+  #         package-name: 'llama-swap'
+  #         package-type: 'container'
+  #         delete-only-untagged-versions: 'true'

@@ -25,6 +25,7 @@ log_info() {
 
 ARCH=$1
 PUSH_IMAGES=${2:-false}
+COMMIT_SHA=${3}
 
 # List of allowed architectures
 ALLOWED_ARCHS=("intel" "vulkan" "musa" "cuda" "cpu" "rocm")
@@ -116,7 +117,7 @@ SD_TAG=master-${ARCH}
 # Abort if LCPP_TAG is empty.
 if [[ -z "$LCPP_TAG" ]]; then
     log_info "Abort: Could not find llama-server container for arch: $ARCH"
-    exit 1
+    # exit 1
 else
     log_info "LCPP_TAG: $LCPP_TAG"
 fi
@@ -126,36 +127,39 @@ if [[ ! -z "$DEBUG_ABORT_BUILD" ]]; then
     exit 0
 fi
 
-for CONTAINER_TYPE in non-root root; do
-  CONTAINER_TAG="ghcr.io/${LS_REPO}:v${LS_VER}-${ARCH}-${LCPP_TAG}"
-  CONTAINER_LATEST="ghcr.io/${LS_REPO}:${ARCH}"
+for CONTAINER_TYPE in root; do
+  CONTAINER_TAG="ghcr.io/${LS_REPO}:${ARCH}-${COMMIT_SHA}"
+  CONTAINER_LATEST="ghcr.io/${LS_REPO}:${ARCH}-latest"
   USER_UID=0
   USER_GID=0
   USER_HOME=/root
 
-  if [ "$CONTAINER_TYPE" == "non-root" ]; then
-    CONTAINER_TAG="${CONTAINER_TAG}-non-root"
-    CONTAINER_LATEST="${CONTAINER_LATEST}-non-root"
-    USER_UID=10001
-    USER_GID=10001
-    USER_HOME=/app
-  fi
+#   if [ "$CONTAINER_TYPE" == "non-root" ]; then
+#     CONTAINER_TAG="${CONTAINER_TAG}-non-root"
+#     CONTAINER_LATEST="${CONTAINER_LATEST}-non-root"
+#     USER_UID=10001
+#     USER_GID=10001
+#     USER_HOME=/app
+#   fi
 
-  log_info "Building $CONTAINER_TYPE $CONTAINER_TAG $LS_VER"
-  docker build --provenance=false -f llama-swap.Containerfile --build-arg BASE_TAG=${BASE_TAG} --build-arg LS_VER=${LS_VER} --build-arg UID=${USER_UID} \
-    --build-arg LS_REPO=${LS_REPO} --build-arg GID=${USER_GID} --build-arg USER_HOME=${USER_HOME} -t ${CONTAINER_TAG} -t ${CONTAINER_LATEST} \
-    --build-arg BASE_IMAGE=${BASE_IMAGE} .
+  log_info "Building $CONTAINER_TYPE $CONTAINER_TAG"
+    cd ../
+    pwd
+    docker build --progress=plain -t ${CONTAINER_TAG} -t ${CONTAINER_LATEST} --platform linux/arm64 --build-arg BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" -f ./docker/llama-swap.spark.Containerfile .
+#   docker build --provenance=false -f llama-swap.Containerfile --build-arg BASE_TAG=${BASE_TAG} --build-arg LS_VER=${LS_VER} --build-arg UID=${USER_UID} \
+#     --build-arg LS_REPO=${LS_REPO} --build-arg GID=${USER_GID} --build-arg USER_HOME=${USER_HOME} -t ${CONTAINER_TAG} -t ${CONTAINER_LATEST} \
+#     --build-arg BASE_IMAGE=${BASE_IMAGE} .
 
   # For architectures with stable-diffusion.cpp support, layer sd-server on top
-  case "$ARCH" in
-    "musa" | "vulkan")
-      log_info "Adding sd-server to $CONTAINER_TAG"
-      docker build --provenance=false -f llama-swap-sd.Containerfile \
-        --build-arg BASE=${CONTAINER_TAG} \
-        --build-arg SD_IMAGE=${SD_IMAGE} --build-arg SD_TAG=${SD_TAG} \
-        --build-arg UID=${USER_UID} --build-arg GID=${USER_GID} \
-        -t ${CONTAINER_TAG} -t ${CONTAINER_LATEST} . ;;
-  esac
+#   case "$ARCH" in
+#     "musa" | "vulkan")
+#       log_info "Adding sd-server to $CONTAINER_TAG"
+#       docker build --provenance=false -f llama-swap-sd.Containerfile \
+#         --build-arg BASE=${CONTAINER_TAG} \
+#         --build-arg SD_IMAGE=${SD_IMAGE} --build-arg SD_TAG=${SD_TAG} \
+#         --build-arg UID=${USER_UID} --build-arg GID=${USER_GID} \
+#         -t ${CONTAINER_TAG} -t ${CONTAINER_LATEST} . ;;
+#   esac
 
   if [ "$PUSH_IMAGES" == "true" ]; then
     docker push ${CONTAINER_TAG}
