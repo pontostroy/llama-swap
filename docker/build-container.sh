@@ -25,6 +25,7 @@ log_info() {
 
 ARCH=$1
 PUSH_IMAGES=${2:-false}
+COMMIT_SHA=${3}
 
 # List of allowed architectures
 ALLOWED_ARCHS=("intel" "vulkan" "musa" "cuda" "cuda13" "cpu" "rocm")
@@ -134,7 +135,7 @@ SD_TAG=master-${ARCH}
 # Abort if LCPP_TAG is empty.
 if [[ -z "$LCPP_TAG" ]]; then
     log_info "Abort: Could not find llama-server container for arch: $ARCH"
-    exit 1
+    # exit 1
 else
     log_info "LCPP_TAG: $LCPP_TAG"
 fi
@@ -144,71 +145,45 @@ if [[ ! -z "$DEBUG_ABORT_BUILD" ]]; then
     exit 0
 fi
 
-# cpu is the only backend with a multi-arch upstream base
-# (ghcr.io/ggml-org/llama.cpp:server-bXXXX ships amd64+arm64); GPU backends
-# are amd64-only and stay on the original `docker build` path so the
-# sd-server layer can still FROM the just-built image via the local
-# dockerd image store (buildx's container driver has a separate store
-# that doesn't share with dockerd, which breaks the sd build).
-if [ "$ARCH" == "cpu" ]; then
-    if [ "$PUSH_IMAGES" == "true" ]; then
-        BUILDX_FLAGS="--push --platform linux/amd64,linux/arm64"
-    else
-        # Smoke build: validate both platforms but emit no output. buildx
-        # on the docker-container driver defaults to cacheonly when
-        # neither --push nor --load is given, so each arch fully builds
-        # and a regression in either fails CI — without materializing the
-        # image or needing to --load (which is multi-arch-incompatible).
-        BUILDX_FLAGS="--platform linux/amd64,linux/arm64"
-    fi
-fi
-
-for CONTAINER_TYPE in non-root root; do
-  CONTAINER_TAG="ghcr.io/${LS_REPO}:v${LS_VER}-${ARCH}-${LCPP_TAG}"
-  CONTAINER_LATEST="ghcr.io/${LS_REPO}:${ARCH}"
+for CONTAINER_TYPE in root; do
+  CONTAINER_TAG="ghcr.io/${LS_REPO}:${ARCH}-${COMMIT_SHA}"
+  CONTAINER_LATEST="ghcr.io/${LS_REPO}:${ARCH}-latest"
+  CONTAINER_CUDA="ghcr.io/${LS_REPO}:cuda-latest"
   USER_UID=0
   USER_GID=0
   USER_HOME=/root
 
-  if [ "$CONTAINER_TYPE" == "non-root" ]; then
-    CONTAINER_TAG="${CONTAINER_TAG}-non-root"
-    CONTAINER_LATEST="${CONTAINER_LATEST}-non-root"
-    USER_UID=10001
-    USER_GID=10001
-    USER_HOME=/app
-  fi
+#   if [ "$CONTAINER_TYPE" == "non-root" ]; then
+#     CONTAINER_TAG="${CONTAINER_TAG}-non-root"
+#     CONTAINER_LATEST="${CONTAINER_LATEST}-non-root"
+#     USER_UID=10001
+#     USER_GID=10001
+#     USER_HOME=/app
+#   fi
 
-  log_info "Building $CONTAINER_TYPE $CONTAINER_TAG $LS_VER"
-  if [ "$ARCH" == "cpu" ]; then
-    docker buildx build $BUILDX_FLAGS --provenance=false \
-      -f llama-swap.Containerfile \
-      --build-arg BASE_TAG=${BASE_TAG} --build-arg LS_VER=${LS_VER} --build-arg UID=${USER_UID} \
-      --build-arg LS_REPO=${LS_BINARY_REPO} --build-arg GID=${USER_GID} --build-arg USER_HOME=${USER_HOME} \
-      --build-arg BASE_IMAGE=${BASE_IMAGE} \
-      -t ${CONTAINER_TAG} -t ${CONTAINER_LATEST} .
-  else
-    docker build --provenance=false -f llama-swap.Containerfile \
-      --build-arg BASE_TAG=${BASE_TAG} --build-arg LS_VER=${LS_VER} --build-arg UID=${USER_UID} \
-      --build-arg LS_REPO=${LS_BINARY_REPO} --build-arg GID=${USER_GID} --build-arg USER_HOME=${USER_HOME} \
-      -t ${CONTAINER_TAG} -t ${CONTAINER_LATEST} \
-      --build-arg BASE_IMAGE=${BASE_IMAGE} .
-  fi
+  log_info "Building $CONTAINER_TYPE $CONTAINER_TAG"
+    cd ../
+    pwd
+    docker build --progress=plain -t ${CONTAINER_TAG} -t ${CONTAINER_CUDA} -t ${CONTAINER_LATEST} --platform linux/arm64 --build-arg BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" -f ./docker/llama-swap.spark.Containerfile .
+#   docker build --provenance=false -f llama-swap.Containerfile --build-arg BASE_TAG=${BASE_TAG} --build-arg LS_VER=${LS_VER} --build-arg UID=${USER_UID} \
+#     --build-arg LS_REPO=${LS_REPO} --build-arg GID=${USER_GID} --build-arg USER_HOME=${USER_HOME} -t ${CONTAINER_TAG} -t ${CONTAINER_LATEST} \
+#     --build-arg BASE_IMAGE=${BASE_IMAGE} .
 
-  # For architectures with stable-diffusion.cpp support, layer sd-server on top.
-  # Stays on `docker build` so the base resolves from local dockerd.
-  case "$ARCH" in
-    "musa" | "vulkan")
-      log_info "Adding sd-server to $CONTAINER_TAG"
-      docker build --provenance=false -f llama-swap-sd.Containerfile \
-        --build-arg BASE=${CONTAINER_TAG} \
-        --build-arg SD_IMAGE=${SD_IMAGE} --build-arg SD_TAG=${SD_TAG} \
-        --build-arg UID=${USER_UID} --build-arg GID=${USER_GID} \
-        -t ${CONTAINER_TAG} -t ${CONTAINER_LATEST} . ;;
-  esac
+  # For architectures with stable-diffusion.cpp support, layer sd-server on top
+#   case "$ARCH" in
+#     "musa" | "vulkan")
+#       log_info "Adding sd-server to $CONTAINER_TAG"
+#       docker build --provenance=false -f llama-swap-sd.Containerfile \
+#         --build-arg BASE=${CONTAINER_TAG} \
+#         --build-arg SD_IMAGE=${SD_IMAGE} --build-arg SD_TAG=${SD_TAG} \
+#         --build-arg UID=${USER_UID} --build-arg GID=${USER_GID} \
+#         -t ${CONTAINER_TAG} -t ${CONTAINER_LATEST} . ;;
+#   esac
 
   # cpu builds push inline via buildx --push; all other archs push here.
   if [ "$ARCH" != "cpu" ] && [ "$PUSH_IMAGES" == "true" ]; then
     docker push ${CONTAINER_TAG}
     docker push ${CONTAINER_LATEST}
+    docker push ${CONTAINER_CUDA}
   fi
 done
