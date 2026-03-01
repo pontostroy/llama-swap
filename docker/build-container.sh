@@ -28,7 +28,7 @@ PUSH_IMAGES=${2:-false}
 COMMIT_SHA=${3}
 
 # List of allowed architectures
-ALLOWED_ARCHS=("intel" "vulkan" "musa" "cuda" "cpu" "rocm")
+ALLOWED_ARCHS=("intel" "vulkan" "musa" "cuda" "cuda13" "cpu" "rocm")
 
 # Check if ARCH is in the allowed list
 if [[ ! " ${ALLOWED_ARCHS[@]} " =~ " ${ARCH} " ]]; then
