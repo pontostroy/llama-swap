@@ -25,6 +25,8 @@ import (
 // TokenMetrics holds token usage and performance metrics.
 type TokenMetrics struct {
 	CachedTokens    int     `json:"cache_tokens"`
+	DraftTokens     int     `json:"draft_tokens"`
+	DraftAccTokens  int     `json:"draft_acc_tokens"`
 	InputTokens     int     `json:"input_tokens"`
 	OutputTokens    int     `json:"output_tokens"`
 	PromptPerSecond float64 `json:"prompt_per_second"`
@@ -33,15 +35,16 @@ type TokenMetrics struct {
 
 // ActivityLogEntry represents parsed token statistics from llama-server logs.
 type ActivityLogEntry struct {
-	ID              int          `json:"id"`
-	Timestamp       time.Time    `json:"timestamp"`
-	Model           string       `json:"model"`
-	ReqPath         string       `json:"req_path"`
-	RespContentType string       `json:"resp_content_type"`
-	RespStatusCode  int          `json:"resp_status_code"`
-	Tokens          TokenMetrics `json:"tokens"`
-	DurationMs      int          `json:"duration_ms"`
-	HasCapture      bool         `json:"has_capture"`
+	ID              int               `json:"id"`
+	Timestamp       time.Time         `json:"timestamp"`
+	Model           string            `json:"model"`
+	ReqPath         string            `json:"req_path"`
+	RespContentType string            `json:"resp_content_type"`
+	RespStatusCode  int               `json:"resp_status_code"`
+	Tokens          TokenMetrics      `json:"tokens"`
+	DurationMs      int               `json:"duration_ms"`
+	HasCapture      bool              `json:"has_capture"`
+	Metadata        map[string]string `json:"metadata,omitempty"`
 }
 
 // ActivityLogEvent carries a single activity log entry to event subscribers.
@@ -133,6 +136,13 @@ func (mp *metricsMonitor) record(modelID string, r *http.Request, recorder *resp
 		RespContentType: recorder.Header().Get("Content-Type"),
 		RespStatusCode:  recorder.Status(),
 		DurationMs:      int(time.Since(recorder.StartTime()).Milliseconds()),
+	}
+
+	if ctxData, ok := shared.ReadContext(r.Context()); ok && len(ctxData.Metadata) > 0 {
+		tm.Metadata = make(map[string]string, len(ctxData.Metadata))
+		for k, v := range ctxData.Metadata {
+			tm.Metadata[k] = v
+		}
 	}
 
 	queueAndEmit := func() {
@@ -337,6 +347,8 @@ func buildMetrics(modelID string, start time.Time, inputTokens, outputTokens, ca
 	durationMs := wallDurationMs
 	tokensPerSecond := -1.0
 	promptPerSecond := -1.0
+	draftTokens := -1
+	draftAccTokens := -1
 
 	if timings.Exists() {
 		inputTokens = timings.Get("prompt_n").Int()
@@ -350,6 +362,10 @@ func buildMetrics(modelID string, start time.Time, inputTokens, outputTokens, ca
 		if cachedValue := timings.Get("cache_n"); cachedValue.Exists() {
 			cachedTokens = cachedValue.Int()
 		}
+		if timings.Get("draft_n").Exists() && timings.Get("draft_n_accepted").Exists() {
+			draftTokens = int(timings.Get("draft_n").Int())
+			draftAccTokens = int(timings.Get("draft_n_accepted").Int())
+		}
 	}
 
 	return ActivityLogEntry{
@@ -357,6 +373,8 @@ func buildMetrics(modelID string, start time.Time, inputTokens, outputTokens, ca
 		Model:     modelID,
 		Tokens: TokenMetrics{
 			CachedTokens:    int(cachedTokens),
+			DraftTokens:     draftTokens,
+			DraftAccTokens:  draftAccTokens,
 			InputTokens:     int(inputTokens),
 			OutputTokens:    int(outputTokens),
 			PromptPerSecond: promptPerSecond,

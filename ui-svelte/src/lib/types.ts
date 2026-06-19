@@ -25,6 +25,8 @@ export interface Model {
 
 export interface TokenMetrics {
   cache_tokens: number;
+  draft_tokens: number;
+  draft_acc_tokens: number;
   input_tokens: number;
   output_tokens: number;
   prompt_per_second: number;
@@ -41,6 +43,7 @@ export interface ActivityLogEntry {
   tokens: TokenMetrics;
   duration_ms: number;
   has_capture: boolean;
+  metadata?: Record<string, string>;
 }
 
 export interface ReqRespCapture {

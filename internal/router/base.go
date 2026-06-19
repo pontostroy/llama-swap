@@ -28,8 +28,7 @@ type unloadReq struct {
 
 // baseRouter owns the channels, run-loop, and process machinery shared by every
 // concrete router. Concrete routers embed *baseRouter and supply a
-// scheduler.Factory (which captures their scheduler.Swapper) describing how
-// requests are scheduled and how their eviction set is decided. baseRouter
+// scheduler.Swapper describing how eviction sets are decided. baseRouter
 // implements scheduler.Effects so the scheduler can call back for side-effects.
 type baseRouter struct {
 	name      string
@@ -54,6 +53,7 @@ type baseRouter struct {
 	procCancel context.CancelFunc
 
 	handlerCh   chan scheduler.HandlerReq
+	cancelCh    chan scheduler.HandlerReq
 	shutdownCh  chan shutdownReq
 	unloadCh    chan unloadReq
 	swapDoneCh  chan scheduler.SwapDone
@@ -74,8 +74,8 @@ func newBaseRouter(
 	conf config.Config,
 	processes map[string]process.Process,
 	logger *logmon.Monitor,
-	newSched scheduler.Factory,
-) *baseRouter {
+	planner scheduler.Swapper,
+) (*baseRouter, error) {
 	shutdownCtx, shutdownFn := context.WithCancel(context.Background())
 	procCtx, procCancel := context.WithCancel(context.Background())
 	b := &baseRouter{
@@ -88,14 +88,19 @@ func newBaseRouter(
 		procCtx:     procCtx,
 		procCancel:  procCancel,
 		handlerCh:   make(chan scheduler.HandlerReq),
+		cancelCh:    make(chan scheduler.HandlerReq),
 		shutdownCh:  make(chan shutdownReq),
 		unloadCh:    make(chan unloadReq),
 		swapDoneCh:  make(chan scheduler.SwapDone),
 		serveDoneCh: make(chan scheduler.ServeDoneEvent),
 		runDone:     make(chan struct{}),
 	}
-	b.schedule = newSched(name, logger, b)
-	return b
+	sched, err := scheduler.New(conf, name, logger, planner, b)
+	if err != nil {
+		return nil, err
+	}
+	b.schedule = sched
+	return b, nil
 }
 
 func (b *baseRouter) notifyProcessed() {
@@ -115,6 +120,10 @@ func (b *baseRouter) run() {
 
 		case req := <-b.handlerCh:
 			b.schedule.OnRequest(req)
+			b.notifyProcessed()
+
+		case req := <-b.cancelCh:
+			b.schedule.OnCancel(req)
 			b.notifyProcessed()
 
 		case req := <-b.unloadCh:
@@ -473,6 +482,14 @@ func (b *baseRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		finishLoading()
 	case <-req.Context().Done():
 		finishLoading()
+		// Notify the scheduler so it can prune this request from its queue
+		// and swap waiters. Without this, a queued request whose client left
+		// would sit in the scheduler until drainQueue eventually starts a
+		// wasted model load for it.
+		select {
+		case b.cancelCh <- hr:
+		case <-b.shutdownCtx.Done():
+		}
 		return
 	case <-b.shutdownCtx.Done():
 		finishLoading()
