@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { models, profileModels } from "../../stores/api";
+  import { playgroundModels, profileModels, selectorModels } from "../../stores/api";
   import { groupModels } from "../../lib/modelUtils";
   import * as Select from "$lib/components/ui/select/index.js";
 
@@ -13,9 +13,19 @@
 
   let { value = $bindable(), placeholder = "Select a model...", disabled = false, capabilities, matchAny = false }: Props = $props();
 
-  let grouped = $derived(groupModels($models, capabilities, matchAny));
+  let grouped = $derived(groupModels(
+    $playgroundModels.filter((model) => model.playgroundType === "model" || model.playgroundType === "peer"),
+    capabilities,
+    matchAny,
+  ));
   let hasMatching = $derived(grouped.localMatching.length > 0);
-  let hasModels = $derived($profileModels.length > 0 || hasMatching || grouped.local.length > 0 || Object.keys(grouped.peersByProvider).length > 0);
+  let hasModels = $derived(
+    $profileModels.length > 0
+      || $selectorModels.length > 0
+      || hasMatching
+      || grouped.local.length > 0
+      || grouped.peers.length > 0
+  );
 </script>
 
 {#if hasModels}
@@ -51,6 +61,15 @@
         </Select.Group>
         <Select.Separator />
       {/if}
+      {#if $selectorModels.length > 0}
+        <Select.Group>
+          <Select.Label>Selectors</Select.Label>
+          {#each $selectorModels as model (model.id)}
+            <Select.Item value={model.id}>{model.id}</Select.Item>
+          {/each}
+        </Select.Group>
+        <Select.Separator />
+      {/if}
       {#if grouped.local.length > 0}
         <Select.Group>
           <Select.Label>Local</Select.Label>
@@ -65,14 +84,14 @@
         </Select.Group>
         <Select.Separator />
       {/if}
-      {#each Object.entries(grouped.peersByProvider).sort(([a], [b]) => a.localeCompare(b)) as [peerId, peerModels] (peerId)}
+      {#if grouped.peers.length > 0}
         <Select.Group>
-          <Select.Label>Peer: {peerId}</Select.Label>
-          {#each peerModels as model (model.id)}
+          <Select.Label>Peers</Select.Label>
+          {#each grouped.peers as model (model.id)}
             <Select.Item value={model.id}>{model.id}</Select.Item>
           {/each}
         </Select.Group>
-      {/each}
+      {/if}
     </Select.Content>
   </Select.Root>
 {/if}

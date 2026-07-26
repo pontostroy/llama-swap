@@ -63,15 +63,6 @@ func (ml MacroList) Get(name string) (any, bool) {
 	return nil, false
 }
 
-// ToMap converts MacroList to a map (for backward compatibility if needed)
-func (ml MacroList) ToMap() map[string]any {
-	result := make(map[string]any, len(ml))
-	for _, entry := range ml {
-		result[entry.Name] = entry.Value
-	}
-	return result
-}
-
 type GroupConfig struct {
 	Swap       bool     `yaml:"swap"`
 	Exclusive  bool     `yaml:"exclusive"`
@@ -141,20 +132,21 @@ func (c *ProfileConfig) UnmarshalYAML(value *yaml.Node) error {
 }
 
 type Config struct {
-	HealthCheckTimeout int                      `yaml:"healthCheckTimeout"`
-	LogRequests        bool                     `yaml:"logRequests"`
-	LogLevel           string                   `yaml:"logLevel"`
-	LogTimeFormat      string                   `yaml:"logTimeFormat"`
-	LogToStdout        string                   `yaml:"logToStdout"`
-	MetricsMaxInMemory int                      `yaml:"metricsMaxInMemory"`
-	CaptureBuffer      int                      `yaml:"captureBuffer"`
-	Store              *Store                   `yaml:"store"`
-	UI                 UIConfig                 `yaml:"ui"`
-	Performance        PerformanceConfig        `yaml:"performance"`
-	GlobalTTL          int                      `yaml:"globalTTL"`
-	UnloadTimeout      int                      `yaml:"unloadTimeout"`
-	Models             map[string]ModelConfig   `yaml:"models"` /* key is model ID */
-	Profiles           map[string]ProfileConfig `yaml:"profiles"`
+	HealthCheckTimeout int                       `yaml:"healthCheckTimeout"`
+	LogRequests        bool                      `yaml:"logRequests"`
+	LogLevel           string                    `yaml:"logLevel"`
+	LogTimeFormat      string                    `yaml:"logTimeFormat"`
+	LogToStdout        string                    `yaml:"logToStdout"`
+	MetricsMaxInMemory int                       `yaml:"metricsMaxInMemory"`
+	CaptureBuffer      int                       `yaml:"captureBuffer"`
+	Store              *Store                    `yaml:"store"`
+	UI                 UIConfig                  `yaml:"ui"`
+	Performance        PerformanceConfig         `yaml:"performance"`
+	GlobalTTL          int                       `yaml:"globalTTL"`
+	UnloadTimeout      int                       `yaml:"unloadTimeout"`
+	Models             map[string]ModelConfig    `yaml:"models"` /* key is model ID */
+	Profiles           map[string]ProfileConfig  `yaml:"profiles"`
+	Selectors          map[string]SelectorConfig `yaml:"selectors"`
 
 	// routing is the canonical source for swap/scheduling configuration.
 	// New code must read Routing, never the backwards-compat fields below.
@@ -247,12 +239,8 @@ func (c *Config) ResolveBaseModel(search string) (string, bool) {
 	if realName, found := c.RealModelName(search); found {
 		return realName, true
 	}
-	for _, peer := range c.Peers {
-		for _, modelID := range peer.Models {
-			if modelID == search {
-				return search, true
-			}
-		}
+	if _, _, found := c.ResolvePeerModel(search); found {
+		return search, true
 	}
 	return "", false
 }
