@@ -11,7 +11,8 @@
     unloadAllModels,
   } from "../stores/api";
   import { statusDotColor } from "../stores/modelLoad";
-  import { showUnlistedModels as showUnlisted } from "../stores/modelDisplay";
+  import { showUnlistedModels as showUnlisted, showCapabilityTags } from "../stores/modelDisplay";
+  import { listCapabilityBadges, capabilityBadgeClass } from "../lib/capabilities";
   import type { Model } from "../lib/types";
   import ModelLoadButton from "../components/ModelLoadButton.svelte";
   import Tag from "../components/Tag.svelte";
@@ -20,6 +21,7 @@
   import * as Switch from "$lib/components/ui/switch/index.js";
   import * as Label from "$lib/components/ui/label/index.js";
   import { PowerOff, Loader2, ExternalLink, SquareStack } from "@lucide/svelte";
+  import { modelServerPath } from "../lib/modelUtils";
 
   let unloadingAll = $state(false);
 
@@ -74,6 +76,16 @@
         {/if}
       </div>
     </a>
+    {#if $showCapabilityTags}
+      {@const badges = listCapabilityBadges(model)}
+      {#if badges.length > 0}
+        <div class="hidden min-w-0 flex-wrap items-center gap-1 sm:flex">
+          {#each badges as badge (badge.key)}
+            <Tag class={`px-1.5 text-[0.625rem] ${capabilityBadgeClass[badge.key] ?? ""}`}>{badge.label}</Tag>
+          {/each}
+        </div>
+      {/if}
+    {/if}
     <span class="text-muted-foreground text-xs uppercase tracking-wide">
       {model.state}
     </span>
@@ -82,7 +94,7 @@
     {/if}
     {#if !model.peerID}
       <a
-        href="/upstream/{encodeURIComponent(model.id)}/"
+        href={modelServerPath(model.id)}
         target="_blank"
         rel="noopener noreferrer"
         class="text-muted-foreground hover:text-foreground"

@@ -17,8 +17,8 @@ import (
 	"github.com/mostlygeek/llama-swap/internal/logmon"
 	"github.com/mostlygeek/llama-swap/internal/perf"
 	"github.com/mostlygeek/llama-swap/internal/router"
-	"github.com/mostlygeek/llama-swap/internal/shared"
 	"github.com/mostlygeek/llama-swap/internal/store"
+	"github.com/mostlygeek/llama-swap/internal/swaputil"
 )
 
 // Server owns the HTTP mux, cross-cutting middleware, and the local/peer model
@@ -77,7 +77,7 @@ func (s *Server) setActiveProfile(name string) (bool, error) {
 	s.profileMu.Unlock()
 
 	s.proxylog.Infof("active profile changed to %q", name)
-	event.Emit(shared.ProfileChangedEvent{Active: name})
+	event.Emit(swaputil.ProfileChangedEvent{Active: name})
 	return true, nil
 }
 
@@ -100,6 +100,9 @@ var modelPostJSONRoutes = []string{
 	"/v1/images/generations",
 	"/sdapi/v1/txt2img",
 	"/sdapi/v1/img2img",
+
+	// audio.cpp generic task API
+	"/audioapi/v1/tasks/run",
 
 	// versionless routes, the /v/ is stripped before the request is forwarded upstream
 	// see issue #728
@@ -204,13 +207,14 @@ func New(cfg config.Config, muxlog *logmon.Monitor, proxylog *logmon.Monitor, up
 }
 
 // localPeerHandler dispatches a model-routed request to the local or peer
-// router. The model is resolved once via shared.FetchContext.
+// router. The model is resolved once via swaputil.FetchContext.
 func (s *Server) localPeerHandler(w http.ResponseWriter, r *http.Request) {
 	stripVersionPrefix(r)
+	stripAudioAPIPrefix(r)
 
-	data, err := shared.FetchContext(r, s.cfg)
+	data, err := swaputil.FetchContext(r, s.cfg)
 	if err != nil {
-		shared.SendError(w, r, shared.ErrNoModelInContext)
+		swaputil.SendError(w, r, swaputil.ErrNoModelInContext)
 		return
 	}
 
@@ -222,7 +226,7 @@ func (s *Server) localPeerHandler(w http.ResponseWriter, r *http.Request) {
 		s.proxylog.Debugf("dispatch: using peer for model: %s", data.ModelID)
 		s.peer.ServeHTTP(w, r)
 	default:
-		shared.SendError(w, r, router.ErrNoRouterFound)
+		swaputil.SendError(w, r, router.ErrNoRouterFound)
 	}
 }
 
@@ -231,6 +235,15 @@ func (s *Server) localPeerHandler(w http.ResponseWriter, r *http.Request) {
 func stripVersionPrefix(r *http.Request) {
 	if strings.HasPrefix(r.URL.Path, "/v/") {
 		r.URL.Path = strings.TrimPrefix(r.URL.Path, "/v")
+	}
+}
+
+// stripAudioAPIPrefix rewrites /audioapi/... requests to their /... form
+// before forwarding upstream, so /audioapi/v1/tasks/run reaches the upstream
+// as /v1/tasks/run.
+func stripAudioAPIPrefix(r *http.Request) {
+	if strings.HasPrefix(r.URL.Path, "/audioapi") {
+		r.URL.Path = strings.TrimPrefix(r.URL.Path, "/audioapi")
 	}
 }
 
@@ -244,7 +257,7 @@ func (s *Server) routes() {
 		CreateProfileMiddleware(s),
 		CreateSelectorMiddleware(s),
 		CreateRequestContextMiddleware(s.cfg),
-		CreateInflightMiddleware(s.inflight),
+		CreateInflightMiddleware(s.inflight, s.cfg),
 		CreateFilterMiddleware(s.cfg),
 		CreateFormFilterMiddleware(s.cfg),
 		CreateMetricsMiddleware(s.metrics, s.cfg),
@@ -267,6 +280,7 @@ func (s *Server) routes() {
 
 	// llama-swap API + custom endpoints.
 	mux.Handle("GET /v1/models", apiChain.ThenFunc(s.handleListModels))
+	mux.Handle("GET /models", apiChain.ThenFunc(s.handleListModels))
 	mux.Handle("GET /logs", apiChain.ThenFunc(s.handleLogs))
 	mux.Handle("GET /logs/stream", apiChain.ThenFunc(s.handleLogStream))
 	mux.Handle("GET /logs/stream/{logMonitorID...}", apiChain.ThenFunc(s.handleLogStream))
@@ -295,6 +309,12 @@ func (s *Server) routes() {
 	)
 	mux.HandleFunc("GET /upstream", handleUpstreamRedirect)
 	mux.Handle("/upstream/{upstreamPath...}", upstreamChain.ThenFunc(s.handleUpstream))
+
+	// ComfyUI compatibility passthrough. This uses the fixed comfyui_auto model,
+	// whose compatibility settings are applied while loading config. Only the
+	// root path may start an unloaded model.
+	mux.Handle("/comfyui", apiChain.ThenFunc(handleComfyUIRedirect))
+	mux.Handle("/comfyui/{comfyPath...}", apiChain.ThenFunc(s.handleComfyUI))
 
 	// API group (API-key protected) consumed by the UI.
 	mux.Handle("POST /api/models/unload", apiChain.ThenFunc(s.handleAPIUnloadAll))

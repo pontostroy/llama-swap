@@ -16,8 +16,8 @@ import (
 	"github.com/mostlygeek/llama-swap/internal/logmon"
 	"github.com/mostlygeek/llama-swap/internal/process"
 	"github.com/mostlygeek/llama-swap/internal/router"
-	"github.com/mostlygeek/llama-swap/internal/shared"
 	"github.com/mostlygeek/llama-swap/internal/store"
+	"github.com/mostlygeek/llama-swap/internal/swaputil"
 )
 
 // stubRouter is a minimal router.LocalRouter for Server dispatch tests.
@@ -119,6 +119,15 @@ func metricsEntries(t *testing.T, mm *metricsMonitor) []ActivityLogEntry {
 func chatRequest(model string) *http.Request {
 	body := strings.NewReader(`{"model":"` + model + `"}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", body)
+	req.Header.Set("Content-Type", "application/json")
+	return req
+}
+
+// audioTaskRequest builds a JSON POST to the /audioapi/v1/tasks/run endpoint
+// carrying the given model field.
+func audioTaskRequest(model string) *http.Request {
+	body := strings.NewReader(`{"model":"` + model + `"}`)
+	req := httptest.NewRequest(http.MethodPost, "/audioapi/v1/tasks/run", body)
 	req.Header.Set("Content-Type", "application/json")
 	return req
 }
@@ -239,6 +248,40 @@ func TestServer_UnknownModelReturns404(t *testing.T) {
 	}
 }
 
+func TestServer_AudioAPIRoutesTaskRequest(t *testing.T) {
+	s := newTestServer(
+		newStubRouter([]string{"local-audio"}, "local audio response"),
+		newStubRouter(nil, ""),
+	)
+
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, audioTaskRequest("local-audio"))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+	}
+	if w.Body.String() != "local audio response" {
+		t.Errorf("body=%q want %q", w.Body.String(), "local audio response")
+	}
+}
+
+func TestServer_AudioAPIRewritesUpstreamPath(t *testing.T) {
+	var gotPath string
+	local := newStubRouter([]string{"m1"}, "")
+	local.serveHTTP = func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	}
+	s := newTestServer(local, newStubRouter(nil, ""))
+
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, audioTaskRequest("m1"))
+
+	if gotPath != "/v1/tasks/run" {
+		t.Errorf("upstream path = %q, want /v1/tasks/run", gotPath)
+	}
+}
+
 func TestServer_UnknownPathReturns404(t *testing.T) {
 	s := newTestServer(newStubRouter(nil, ""), newStubRouter(nil, ""))
 
@@ -349,8 +392,8 @@ func TestServer_Preload(t *testing.T) {
 		OnStartup: config.HookOnStartup{Preload: []string{"m1"}},
 	}}
 
-	got := make(chan shared.ModelPreloadedEvent, 1)
-	cancel := event.On(func(e shared.ModelPreloadedEvent) { got <- e })
+	got := make(chan swaputil.ModelPreloadedEvent, 1)
+	cancel := event.On(func(e swaputil.ModelPreloadedEvent) { got <- e })
 	defer cancel()
 
 	s.startPreload()

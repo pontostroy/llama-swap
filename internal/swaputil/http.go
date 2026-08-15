@@ -1,4 +1,4 @@
-package shared
+package swaputil
 
 import (
 	"bytes"
@@ -11,8 +11,10 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/mostlygeek/llama-swap/internal/config"
 	"github.com/tidwall/gjson"
@@ -43,6 +45,39 @@ var (
 	ErrNoPeerModelFound  = fmt.Errorf("peer model not found")
 	ErrNoLocalModelFound = fmt.Errorf("local model not found")
 )
+
+// IsWebSocketUpgrade reports whether r contains a valid websocket protocol
+// upgrade request. Header token comparisons are case-insensitive and support
+// comma-separated or repeated header values.
+func IsWebSocketUpgrade(r *http.Request) bool {
+	return headerContainsToken(r.Header.Values("Connection"), "upgrade") &&
+		headerContainsToken(r.Header.Values("Upgrade"), "websocket")
+}
+
+func headerContainsToken(values []string, token string) bool {
+	for _, value := range values {
+		for part := range strings.SplitSeq(value, ",") {
+			if strings.EqualFold(strings.TrimSpace(part), token) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// ShouldIgnoreWebsocket reports whether r is a websocket request whose local
+// model configuration opts out of websocket lifecycle activity.
+func ShouldIgnoreWebsocket(r *http.Request, cfg config.Config) bool {
+	if !IsWebSocketUpgrade(r) {
+		return false
+	}
+	data, err := FetchContext(r, cfg)
+	if err != nil {
+		return false
+	}
+	mc, ok := cfg.Models[data.ModelID]
+	return ok && mc.Compat.IgnoreWebsockets
+}
 
 func SendError(w http.ResponseWriter, r *http.Request, err error) {
 	var httpErr HTTPError
@@ -147,6 +182,10 @@ func ReplaceRequestModel(r *http.Request, model, replacement string) (*http.Requ
 			return r, nil
 		}
 
+		// Preserve the client's escaping of the path after the model name before
+		// URL.Path is rewritten below.
+		escapedRemaining := EscapedPathSuffix(r.URL.EscapedPath(), "/upstream/"+model)
+
 		remainingPath := strings.TrimPrefix(upstreamPath, model)
 		rewrittenPath := replacement + remainingPath
 		if replacement == "" {
@@ -155,6 +194,10 @@ func ReplaceRequestModel(r *http.Request, model, replacement string) (*http.Requ
 		r.SetPathValue("upstreamPath", rewrittenPath)
 		r.URL.Path = "/upstream/" + rewrittenPath
 		r.URL.RawPath = ""
+		if replacement != "" && escapedRemaining != "" {
+			prefix := (&url.URL{Path: "/upstream/" + replacement}).EscapedPath()
+			r.URL.RawPath = prefix + escapedRemaining
+		}
 		return invalidateRequestContext(r), nil
 	}
 
@@ -326,6 +369,37 @@ func FindModelInPath(cfg config.Config, path string) (searchName, realName, rema
 	}
 
 	return
+}
+
+// EscapedPathSuffix removes decodedPrefix from escapedPath while leaving the
+// remaining percent-encoding untouched. Decoded paths cannot identify the
+// boundary alone: a model name such as "author/model" may have arrived as the
+// single escaped segment "author%2Fmodel".
+func EscapedPathSuffix(escapedPath, decodedPrefix string) string {
+	rawIndex, prefixIndex := 0, 0
+	for rawIndex < len(escapedPath) && prefixIndex < len(decodedPrefix) {
+		end := rawIndex + 1
+		if escapedPath[rawIndex] == '%' {
+			end = rawIndex + 3
+		} else {
+			_, size := utf8.DecodeRuneInString(escapedPath[rawIndex:])
+			end = rawIndex + size
+		}
+		if end > len(escapedPath) {
+			return ""
+		}
+
+		decoded, err := url.PathUnescape(escapedPath[rawIndex:end])
+		if err != nil || !strings.HasPrefix(decodedPrefix[prefixIndex:], decoded) {
+			return ""
+		}
+		rawIndex = end
+		prefixIndex += len(decoded)
+	}
+	if prefixIndex != len(decodedPrefix) {
+		return ""
+	}
+	return escapedPath[rawIndex:]
 }
 
 func SetContext(ctx context.Context, data ReqContextData) context.Context {

@@ -1,4 +1,4 @@
-package shared
+package swaputil
 
 import (
 	"bytes"
@@ -250,6 +250,22 @@ func TestReplaceRequestModel(t *testing.T) {
 		}
 		assertContextInvalidated(t, updated)
 	})
+}
+
+func TestProxy_ReplaceRequestModelUpstreamPreservesEscapedPath(t *testing.T) {
+	r := httptest.NewRequest(http.MethodPost, "/upstream/author%2Fmodel/api/x%2Fy", nil)
+	r.SetPathValue("upstreamPath", strings.TrimPrefix(r.URL.Path, "/upstream/"))
+
+	updated, err := ReplaceRequestModel(r, "author/model", "target/model")
+	if err != nil {
+		t.Fatalf("ReplaceRequestModel: %v", err)
+	}
+	if got, want := updated.URL.Path, "/upstream/target/model/api/x/y"; got != want {
+		t.Errorf("URL.Path = %q, want %q", got, want)
+	}
+	if got, want := updated.URL.EscapedPath(), "/upstream/target/model/api/x%2Fy"; got != want {
+		t.Errorf("EscapedPath() = %q, want %q", got, want)
+	}
 }
 
 func TestExtractContext_GET(t *testing.T) {
@@ -696,6 +712,31 @@ func TestServer_ExtractAPIKey(t *testing.T) {
 	}
 }
 
+func TestIsWebSocketUpgrade(t *testing.T) {
+	tests := []struct {
+		name       string
+		connection string
+		upgrade    string
+		want       bool
+	}{
+		{name: "standard", connection: "Upgrade", upgrade: "websocket", want: true},
+		{name: "case insensitive tokens", connection: "keep-alive, UpGrAdE", upgrade: "WebSocket", want: true},
+		{name: "missing connection token", connection: "keep-alive", upgrade: "websocket"},
+		{name: "different protocol", connection: "Upgrade", upgrade: "h2c"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodGet, "/socket", nil)
+			r.Header.Set("Connection", tt.connection)
+			r.Header.Set("Upgrade", tt.upgrade)
+			if got := IsWebSocketUpgrade(r); got != tt.want {
+				t.Errorf("IsWebSocketUpgrade() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestFetchContext_UpstreamPath(t *testing.T) {
 	cfg := config.Config{
 		Models: map[string]config.ModelConfig{
@@ -777,6 +818,43 @@ func TestFindModelInPath_PeerNamespaces(t *testing.T) {
 					tt.path, name, modelID, rest, found,
 					tt.wantName, tt.wantModel, tt.wantRest, tt.wantFound,
 				)
+			}
+		})
+	}
+}
+
+func TestProxy_EscapedPathSuffix(t *testing.T) {
+	tests := []struct {
+		escapedPath   string
+		decodedPrefix string
+		want          string
+	}{
+		{
+			escapedPath:   "/upstream/m1/api/userdata/workflows%2Fexample.json",
+			decodedPrefix: "/upstream/m1",
+			want:          "/api/userdata/workflows%2Fexample.json",
+		},
+		{
+			escapedPath:   "/upstream/author/model/api/x%2Fy",
+			decodedPrefix: "/upstream/author/model",
+			want:          "/api/x%2Fy",
+		},
+		{
+			escapedPath:   "/upstream/author%2Fmodel/api/x%2Fy",
+			decodedPrefix: "/upstream/author/model",
+			want:          "/api/x%2Fy",
+		},
+		{
+			escapedPath:   "/upstream/m1",
+			decodedPrefix: "/upstream/m1",
+			want:          "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.escapedPath, func(t *testing.T) {
+			if got := EscapedPathSuffix(tt.escapedPath, tt.decodedPrefix); got != tt.want {
+				t.Errorf("EscapedPathSuffix(%q, %q) = %q, want %q", tt.escapedPath, tt.decodedPrefix, got, tt.want)
 			}
 		})
 	}
